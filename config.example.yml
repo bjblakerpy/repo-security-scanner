@@ -1,0 +1,89 @@
+# secaudit configuration
+# Copy to secaudit.yml and edit for your environment.
+# All ${VAR} references are resolved from environment variables.
+
+github:
+  token: ${GITHUB_TOKEN}
+  org: ""                           # Scan all repos in this GitHub org
+  repos: []                         # Or list specific repos:
+    # - owner/repo-1
+    # - owner/repo-2
+    # - /local/path/to/repo
+  exclude_repos: []                 # Skip these repos
+  include_forks: false
+  clone_depth: 1                    # Shallow clone (0 = full)
+
+scanners:
+  enabled: []                       # Empty = all available scanners
+    # - gitleaks
+    # - semgrep
+    # - pip-audit
+    # - npm-audit
+    # - trivy
+    # - checkov
+    # - hadolint
+    # - licenses
+  gitleaks:
+    full_history: true
+    # config_path: .gitleaks.toml   # Custom gitleaks config
+  semgrep:
+    config: auto
+    exclude:
+      - tests/
+      - "*_test.py"
+  trivy:
+    severity: "CRITICAL,HIGH,MEDIUM"
+  checkov:
+    frameworks: []                  # Empty = auto-detect
+      # - terraform
+      # - cloudformation
+      # - kubernetes
+  licenses:
+    denied_licenses:
+      - GPL-2.0
+      - GPL-3.0
+      - AGPL-3.0
+      - SSPL-1.0
+
+triage:
+  enabled: true
+  model: claude-sonnet-4-20250514
+  api_key: ${ANTHROPIC_API_KEY}
+  max_findings: 500
+
+reporting:
+  notion:
+    enabled: false
+    token: ${NOTION_TOKEN}
+    database_id: ${NOTION_DATABASE_ID}
+    deduplicate: true
+  email:
+    enabled: false
+    smtp_host: ${SMTP_HOST}
+    smtp_port: 587
+    username: ${SMTP_USER}
+    password: ${SMTP_PASS}
+    from: ${EMAIL_FROM}
+    to:
+      - ${EMAIL_TO}
+    send_on: all                    # all | findings_only | critical_only
+  github:
+    pr_comments: true
+    create_issues: true
+    issue_severity: CRITICAL
+    issue_assignees: []
+    issue_labels:
+      - security
+      - automated
+    sarif_upload: true
+
+persistence:
+  enabled: true
+  db_path: ~/.secaudit/findings.db
+  deduplicate_notifications: true   # Only notify on new findings
+  retention_days: 365
+
+severity_threshold: LOW             # Minimum severity to report
+
+logging:
+  level: INFO

@@ -1,0 +1,103 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Every Monday at 6am UTC
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for gitleaks
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache scanner tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            /usr/local/bin/gitleaks
+            /usr/local/bin/hadolint
+          key: scanners-${{ runner.os }}-v2
+
+      - name: Install secaudit and scanner tools
+        run: |
+          pip install ./ --break-system-packages
+
+          # gitleaks
+          if ! command -v gitleaks &> /dev/null; then
+            curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_8.18.4_linux_x64.tar.gz \
+              | tar -xz -C /usr/local/bin gitleaks
+          fi
+
+          # hadolint
+          if ! command -v hadolint &> /dev/null; then
+            curl -sSfL https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
+              -o /usr/local/bin/hadolint && chmod +x /usr/local/bin/hadolint
+          fi
+
+          # trivy
+          if ! command -v trivy &> /dev/null; then
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          fi
+
+          # pip-audit & semgrep & checkov
+          pip install pip-audit semgrep checkov --break-system-packages
+
+      - name: Install repo dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt --break-system-packages; fi
+          if [ -f package.json ]; then npm ci --prefer-offline 2>/dev/null || npm install 2>/dev/null; fi
+
+      - name: Run security scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          secaudit scan \
+            --repo ${{ github.workspace }} \
+            --output sarif --output-file results.sarif \
+            ${{ github.event_name == 'pull_request' && format('--pr-number {0}', github.event.pull_request.number) || '' }}
+
+      - name: Upload SARIF to GitHub Security
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+      - name: PR gate check
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f scan-results.json ]; then
+            CRITICAL=$(python3 -c "import json; d=json.load(open('scan-results.json')); print(len(d.get('critical',[])))")
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "::error::$CRITICAL CRITICAL finding(s) detected. Blocking PR."
+              exit 1
+            fi
+            echo "No critical findings. PR cleared."
+          fi

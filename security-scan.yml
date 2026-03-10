@@ -1,0 +1,77 @@
+name: Security Scan Agent
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Every Monday at 6am UTC — adjust as needed
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:       # Manual trigger from GitHub UI
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo (full history for secret scanning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scan tools
+        run: |
+          pip install pip-audit anthropic requests --break-system-packages
+
+          # gitleaks
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+
+          # semgrep
+          pip install semgrep --break-system-packages
+
+          # npm audit is built into Node (already on ubuntu-latest)
+
+      - name: Install repo dependencies (for accurate dep scanning)
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt --break-system-packages; fi
+          if [ -f package.json ]; then npm ci --prefer-offline 2>/dev/null || npm install 2>/dev/null; fi
+
+      - name: Run Security Scan Agent
+        env:
+          REPO_PATH: ${{ github.workspace }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python agent.py
+
+      - name: Fail PR on critical findings
+        if: github.event_name == 'pull_request'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import json, sys
+          try:
+              with open("/tmp/triage_result.json") as f:
+                  triage = json.load(f)
+              critical = len(triage.get("critical", []))
+              if critical > 0:
+                  print(f"❌ {critical} CRITICAL finding(s) detected. Blocking PR.")
+                  sys.exit(1)
+              print("✅ No critical findings. PR cleared.")
+          except FileNotFoundError:
+              print("No triage result found, skipping gate check.")
+          EOF

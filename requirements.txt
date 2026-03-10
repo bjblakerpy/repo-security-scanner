@@ -1,0 +1,4 @@
+anthropic>=0.25.0
+requests>=2.31.0
+pip-audit>=2.7.0
+semgrep>=1.70.0
